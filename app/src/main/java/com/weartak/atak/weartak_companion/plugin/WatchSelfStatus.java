@@ -45,7 +45,7 @@ final class WatchSelfStatus {
 
     static final class Contribution {
         static final Contribution NONE =
-                new Contribution(null, null, null, null, null, null, Long.MAX_VALUE);
+                new Contribution(null, null, null, null, null, null, false, Long.MAX_VALUE);
 
         final String ppeLevel;
         final String deviceUid;
@@ -54,17 +54,19 @@ final class WatchSelfStatus {
         final Sample hr;
         final Sample skinTempF;
         final Sample exertion;
+        final boolean wearosSnapshotFresh;
         /** Wall-clock time when this contribution changes without a new message. */
         final long nextChangeAt;
 
         Contribution(String ppeLevel, String deviceUid, String model, Sample hr, Sample skinTempF,
-                     Sample exertion, long nextChangeAt) {
+                     Sample exertion, boolean wearosSnapshotFresh, long nextChangeAt) {
             this.ppeLevel = ppeLevel;
             this.deviceUid = deviceUid;
             this.model = model;
             this.hr = hr;
             this.skinTempF = skinTempF;
             this.exertion = exertion;
+            this.wearosSnapshotFresh = wearosSnapshotFresh;
             this.nextChangeAt = nextChangeAt;
         }
 
@@ -123,6 +125,29 @@ final class WatchSelfStatus {
             return xml.append("</device></biometrics>").toString();
         }
 
+        boolean hasWearosPhysiology() {
+            return wearosSnapshotFresh && (hr != null || skinTempF != null);
+        }
+
+        String physiologyXml() {
+            if (!hasWearosPhysiology()) return "";
+            StringBuilder xml = new StringBuilder("<physiology><device><model>WEAROS</model><uid>")
+                    .append(LegacyPliCot.xml(deviceUid)).append("</uid>");
+            if (hr != null) xml.append("<hr>").append(hrText()).append("</hr>");
+            if (skinTempF != null) xml.append("<skt>").append(trimDecimal(skinTempText())).append("</skt>");
+            if (exertion != null) xml.append("<exert>").append(trimDecimal(exertionText())).append("</exert>");
+            return xml.append("</device></physiology>").toString();
+        }
+
+        static String trimDecimal(String value) {
+            int end = value.length();
+            if (value.indexOf('.') >= 0) {
+                while (end > 0 && value.charAt(end - 1) == '0') end--;
+                if (end > 0 && value.charAt(end - 1) == '.') end--;
+            }
+            return value.substring(0, end);
+        }
+
         private static void metric(StringBuilder xml, String name, Sample sample, String value) {
             xml.append('<').append(name).append(" sampleTime='").append(sample.time()).append("'>")
                     .append(value).append("</").append(name).append('>');
@@ -131,10 +156,14 @@ final class WatchSelfStatus {
         @Override public boolean equals(Object other) {
             if (!(other instanceof Contribution)) return false;
             Contribution c = (Contribution) other;
-            return remarksLine().equals(c.remarksLine()) && biometricsXml().equals(c.biometricsXml());
+            return remarksLine().equals(c.remarksLine()) && biometricsXml().equals(c.biometricsXml())
+                    && physiologyXml().equals(c.physiologyXml());
         }
 
-        @Override public int hashCode() { return remarksLine().hashCode() * 31 + biometricsXml().hashCode(); }
+        @Override public int hashCode() {
+            return (remarksLine().hashCode() * 31 + biometricsXml().hashCode()) * 31
+                    + physiologyXml().hashCode();
+        }
     }
 
     private String link;
@@ -245,7 +274,13 @@ final class WatchSelfStatus {
         Sample freshHr = fresh(hr, now, next);
         Sample freshSkin = fresh(skinTempF, now, next);
         Sample freshExertion = fresh(exertion, now, next);
-        return new Contribution(ppeLevel, deviceUid, model, freshHr, freshSkin, freshExertion, next[0]);
+        long wearosExpiresAt = receivedAt + PHYSIO_MAX_AGE_MS;
+        boolean wearosFresh = link.startsWith("wearos:") && "WEAROS".equals(model)
+                && now < wearosExpiresAt;
+        if (wearosFresh && (freshHr != null || freshSkin != null))
+            next[0] = Math.min(next[0], wearosExpiresAt);
+        return new Contribution(ppeLevel, deviceUid, model, freshHr, freshSkin, freshExertion,
+                wearosFresh, next[0]);
     }
 
     /** Returns the sample while its actual measurement time is fresh, tracking its next change. */

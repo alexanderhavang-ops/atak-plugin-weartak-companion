@@ -14,6 +14,7 @@ public class SelfPliAugmenterTest {
         String remarks = "";
         String managed = "";
         String biometrics = "";
+        String physiology = "";
         int remarkWrites, biometricWrites;
         long now = NOW;
         Runnable scheduled;
@@ -26,6 +27,9 @@ public class SelfPliAugmenterTest {
         @Override public void setBiometrics(WatchSelfStatus.Contribution c) {
             biometrics = c.biometricsXml();
             biometricWrites++;
+        }
+        @Override public void setPhysiology(WatchSelfStatus.Contribution c) {
+            physiology = c.physiologyXml();
         }
         @Override public void log(String message) { }
         @Override public long now() { return now; }
@@ -57,6 +61,8 @@ public class SelfPliAugmenterTest {
         assertEquals("Medic, call 123\nMOPP2; HR: 72 bpm @ 18:15:30Z", fake.remarks);
         assertEquals("MOPP2; HR: 72 bpm @ 18:15:30Z", fake.managed);
         assertTrue(fake.biometrics.contains("<uid>WATCH-UID</uid><hr sampleTime='2026-10-22T18:15:30Z'>72</hr>"));
+        assertEquals("<physiology><device><model>WEAROS</model><uid>WATCH-UID</uid>"
+                + "<hr>72</hr></device></physiology>", fake.physiology);
         assertEquals("Medic, call 123\nMOPP2; HR: 72 bpm @ 18:15:30Z", augmenter.phoneRemarks());
     }
 
@@ -93,6 +99,7 @@ public class SelfPliAugmenterTest {
         assertEquals("line one\nline two", fake.remarks);
         assertEquals("", fake.managed);
         assertEquals("", fake.biometrics);
+        assertEquals("", fake.physiology);
         assertNull(fake.scheduled);
     }
 
@@ -104,9 +111,36 @@ public class SelfPliAugmenterTest {
         fake.advance(WatchSelfStatus.PHYSIO_MAX_AGE_MS);
         assertEquals("MOPP0", fake.remarks);
         assertEquals("", fake.biometrics);
+        assertEquals("", fake.physiology);
         fake.advance(WatchSelfStatus.SNAPSHOT_TTL_MS - WatchSelfStatus.PHYSIO_MAX_AGE_MS);
         assertEquals("", fake.remarks);
         assertNull(fake.scheduled);
+    }
+
+    @Test public void physiologyStopsOnNotWornSnapshotAndStaleKeepalive() throws Exception {
+        Fake fake = new Fake();
+        SelfPliAugmenter augmenter = start(fake);
+        augmenter.accept("wearos:1", snapshot("s1", 0, null, 72, NOW + 30_000));
+        assertFalse(fake.physiology.isEmpty());
+        fake.advance(WatchSelfStatus.PHYSIO_MAX_AGE_MS);
+        assertEquals("stale snapshot is withheld even when sample is still fresh", "", fake.physiology);
+        assertFalse(fake.biometrics.isEmpty());
+        augmenter.accept("wearos:1", snapshot("s1", 1, null, 80, fake.now));
+        assertFalse(fake.physiology.isEmpty());
+        augmenter.accept("wearos:1", snapshot("s1", 2, null, null, 0));
+        assertEquals("", fake.physiology);
+    }
+
+    @Test public void physiologyDoesNotReplaceAnyOtherProvider() {
+        java.util.Map<String, String> details = new java.util.HashMap<>();
+        String own = new String("physiology");
+        details.put("physiology", own);
+        assertTrue(SelfPliAugmenter.physiologyKeyAvailable(details, own, value -> value));
+        details.put("other-provider", "physiology");
+        assertFalse(SelfPliAugmenter.physiologyKeyAvailable(details, own, value -> value));
+        details.remove("other-provider");
+        details.put("physiology", "other");
+        assertFalse(SelfPliAugmenter.physiologyKeyAvailable(details, own, value -> value));
     }
 
     @Test public void userEditedManagedLineIsNeverStripped() throws Exception {

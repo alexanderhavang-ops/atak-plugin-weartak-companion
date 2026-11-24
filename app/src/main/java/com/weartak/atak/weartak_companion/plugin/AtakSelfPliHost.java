@@ -18,12 +18,14 @@ final class AtakSelfPliHost implements SelfPliAugmenter.Host, SelfPliAugmenter.C
     static final String MANAGED_REMARKS = "weartak_companion_managed_self_remarks";
     static final String BIOMETRICS = "biometrics";
     static final String PRIVATE_BIOMETRICS = "weartak_companion_biometrics";
+    static final String PHYSIOLOGY = "physiology";
 
     private final AtakPreferences prefs;
     private final Handler handler;
     /** Last element this plugin published under the shared key, and the provider element it extended. */
     private CotDetail published;
     private CotDetail providerBase;
+    private CotDetail publishedPhysiology;
 
     AtakSelfPliHost(MapView mapView, Handler handler) {
         this.prefs = AtakPreferences.getInstance(mapView.getContext());
@@ -52,6 +54,7 @@ final class AtakSelfPliHost implements SelfPliAugmenter.Host, SelfPliAugmenter.C
             else cot.addAdditionalDetail(PRIVATE_BIOMETRICS, merged(null, device));
             return;
         }
+
         CotDetail present = details.get(BIOMETRICS);
         CotDetail base = present != null && present == published ? providerBase : present;
         if (device == null) {
@@ -67,6 +70,40 @@ final class AtakSelfPliHost implements SelfPliAugmenter.Host, SelfPliAugmenter.C
         cot.addAdditionalDetail(BIOMETRICS, next);
         published = next;
         providerBase = base;
+    }
+
+    @Override public void setPhysiology(WatchSelfStatus.Contribution contribution) {
+        CotMapComponent cot = CotMapComponent.getInstance();
+        if (cot == null) return;
+        Map<String, CotDetail> details = additionalDetails(cot);
+        if (details == null) {
+            LogX.w("WTK/SelfPli", "Cannot inspect additional details; watch physiology not published");
+            return;
+        }
+        synchronized (details) {
+            boolean available = SelfPliAugmenter.physiologyKeyAvailable(
+                    details, publishedPhysiology, CotDetail::getElementName);
+            if (contribution == null || !contribution.hasWearosPhysiology() || !available) {
+                if (publishedPhysiology != null && details.get(PHYSIOLOGY) == publishedPhysiology)
+                    cot.removeAdditionalDetail(PHYSIOLOGY);
+                publishedPhysiology = null;
+                if (!available && contribution != null && contribution.hasWearosPhysiology())
+                    LogX.w("WTK/SelfPli", "Existing physiology detail; watch tag not published");
+                return;
+            }
+            CotDetail physiology = new CotDetail(PHYSIOLOGY);
+            CotDetail device = new CotDetail("device");
+            device.addChild(text("model", "WEAROS"));
+            device.addChild(text("uid", contribution.deviceUid));
+            if (contribution.hr != null) device.addChild(text("hr", contribution.hrText()));
+            if (contribution.skinTempF != null)
+                device.addChild(text("skt", WatchSelfStatus.Contribution.trimDecimal(contribution.skinTempText())));
+            if (contribution.exertion != null)
+                device.addChild(text("exert", WatchSelfStatus.Contribution.trimDecimal(contribution.exertionText())));
+            physiology.addChild(device);
+            cot.addAdditionalDetail(PHYSIOLOGY, physiology);
+            publishedPhysiology = physiology;
+        }
     }
 
     /** Copies another provider's biometrics element and appends this watch's device entry. */

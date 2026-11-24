@@ -16,6 +16,7 @@ final class SelfPliAugmenter {
         void setManagedRemarks(String line);
         /** Publishes the biometrics detail, or removes it when xml is empty. */
         void setBiometrics(WatchSelfStatus.Contribution contribution);
+        void setPhysiology(WatchSelfStatus.Contribution contribution);
         void log(String message);
     }
 
@@ -129,8 +130,19 @@ final class SelfPliAugmenter {
         if (!line.equals(previous == null ? "" : previous)) host.setManagedRemarks(line);
         if (published == null || !next.biometricsXml().equals(published.biometricsXml()))
             host.setBiometrics(next);
+        host.setPhysiology(next);
         published = next;
         if (next.nextChangeAt != Long.MAX_VALUE)
             clock.schedule(refresh, Math.max(0L, next.nextChangeAt - now));
+    }
+
+    static <T> boolean physiologyKeyAvailable(java.util.Map<String, T> details, T owned,
+                                              java.util.function.Function<T, String> elementName) {
+        for (java.util.Map.Entry<String, T> entry : details.entrySet()) {
+            T value = entry.getValue();
+            if (value != owned && ("physiology".equals(entry.getKey())
+                    || (value != null && "physiology".equals(elementName.apply(value))))) return false;
+        }
+        return true;
     }
 }

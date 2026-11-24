@@ -527,6 +527,12 @@ The phone appends one managed line to ATAK's `userRemarks`, e.g.
 which ignores a device without `hr`. When another provider already publishes `biometrics`,
 the watch device is merged into it; that provider's devices are preserved.
 
+For a connected WearOS watch, the phone's PLI also carries the watch UID and fresh samples in
+`<physiology><device><model>WEAROS</model><uid>WATCH_UID</uid>...</device></physiology>`.
+The event UID and Android `takv`/`status` remain unchanged. The tag is withheld when another
+provider has a physiology detail, no fresh heart-rate or skin-temperature sample indicates wear,
+or the last snapshot is 120 s old. Watch battery is omitted because SELF_STATUS does not provide it.
+
 Each metric is fresh only while its actual measurement time is no more than 120 s old (30 s future
 skew allowed); receipt time is never used. The managed line and biometrics are removed when:
 - the watch disconnects;

@@ -128,6 +128,23 @@ public class LegacyPliCotTest {
         assertFalse(takv.hasAttribute("os"));
     }
 
+    @Test public void wearosPhysiologyPreservesPhoneIdentityAndStatus() throws Exception {
+        WatchSelfStatus state = new WatchSelfStatus();
+        state.accept("wearos:1", WatchSelfStatusTest.snapshot("s1", 0, null, 72, NOW), NOW);
+        Document event = parse(LegacyPliCot.build(new JSONObject().put("bat", 85),
+                "PHONE-UID", "PHONE-CS", 38.1, -77.1, 1, 10, 20, phone, NOW,
+                "", state.current(NOW)));
+        assertEquals("PHONE-UID", event.getDocumentElement().getAttribute("uid"));
+        assertEquals("PHONE", first(event, "takv").getAttribute("device"));
+        assertEquals("85", first(event, "status").getAttribute("battery"));
+        assertEquals(1, event.getElementsByTagName("physiology").getLength());
+        Element physiology = first(event, "physiology");
+        assertEquals("WATCH-UID", physiology.getElementsByTagName("uid").item(0).getTextContent());
+        assertEquals("WEAROS", physiology.getElementsByTagName("model").item(0).getTextContent());
+        assertEquals("72", physiology.getElementsByTagName("hr").item(0).getTextContent());
+        assertEquals(0, physiology.getElementsByTagName("bat").getLength());
+    }
+
     @Test public void pointFormattingIsCotCompatibleInCommaDecimalLocales() throws Exception {
         Locale previous = Locale.getDefault();
         try {

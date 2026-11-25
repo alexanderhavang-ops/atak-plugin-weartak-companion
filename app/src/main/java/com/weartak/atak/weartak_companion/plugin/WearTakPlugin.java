@@ -1578,11 +1578,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                 new Thread(() -> {
                     try {
                         byte[] data = outgoingVoicePackage(file);
-                        se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(data);
-                        String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(data), java.util.UUID.randomUUID().toString());
-                        runOnMain(() -> {
-                            if (wifiVoiceSelection == selection) wifiVoiceSender.open(host, mission.name, voiceLoginSummary(mission), envelope);
-                        });
+                        runOnMain(() -> wifiVoiceReview(host, selection, data));
                     } catch (Exception error) {
                         runOnMain(() -> {
                             if (wifiVoiceSelection == selection) new AlertDialog.Builder(host)
@@ -1592,6 +1588,26 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                 }, "WearTAK-WiFi-Voice-Package").start();
             }
         }, host);
+    }
+
+    private void wifiVoiceReview(Context host, int selection, byte[] data) {
+        if (wifiVoiceSelection != selection) return;
+        try {
+            se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(data);
+            String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(data),
+                    java.util.UUID.randomUUID().toString());
+            new AlertDialog.Builder(host).setTitle(mission.name).setMessage(voiceLoginSummary(mission))
+                    .setNeutralButton("Set Mumble login", (d,w) -> new VoiceAuthDialog(host, data, mission, voiceProfiles(),
+                            () -> wifiVoiceSelection == selection, updated -> wifiVoiceReview(host, selection, updated)).open())
+                    .setPositiveButton("Pair with watch", (d,w) -> {
+                        if (wifiVoiceSelection == selection) wifiVoiceSender.open(host, mission.name, voiceLoginSummary(mission), envelope);
+                    }).setNegativeButton("Cancel", null).show();
+        } catch (Exception e) { showVoiceTransferStatus("Could not prepare this voice package."); }
+    }
+
+    private org.json.JSONArray voiceProfiles() {
+        JSONObject snapshot = lastSettingsPayload;
+        return snapshot == null ? null : snapshot.optJSONArray("takServerList");
     }
 
     private void chooseSoundChannel(Context host) {
@@ -1691,44 +1707,59 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             se.takcampus.voice.VoiceProfile profile = channel.profile();
             se.takcampus.voice.VoiceLogin login = mission.login(profile);
             if (login != null) destinations.add(profile.endpoint() +
-                    (login.username.isEmpty() ? " (server password)" : " (account login)"));
+                    (se.takcampus.voice.VoiceLogin.ENROLL.equals(login.mode) ? " (enroll a new Voice certificate)"
+                            : se.takcampus.voice.VoiceLogin.CERT.equals(login.mode) ? " (send client certificate and private key)"
+                            : se.takcampus.voice.VoiceLogin.ACCOUNT.equals(login.mode) ? " (account login)"
+                            : login.password.isEmpty() ? " (open server)" : " (server password)"));
         }
         return destinations.isEmpty() ? "Channels only. No saved Mumble login is available."
-                : "Send Mumble credentials to " + android.text.TextUtils.join(", ", destinations) + ". A missing ZIP login can be filled from the matching saved ATAK account.";
+                : "Mumble setup for " + android.text.TextUtils.join(", ", destinations) + ". A missing ZIP login can be filled from the matching saved ATAK account.";
     }
 
     private void prepareVoicePackage(java.io.File file, WearTakBleClient owner, long session) {
         new Thread(() -> {
             try {
                 byte[] mission = outgoingVoicePackage(file);
-                se.takcampus.voice.VoiceMission parsed = se.takcampus.voice.VoicePackageImporter.fromJson(mission);
-                String id = java.util.UUID.nameUUIDFromBytes((MapView.getDeviceUid() + ":" + watchCapabilities.watchUid(session) + ":"
-                        + se.takcampus.voice.VoiceHandoff.hash(mission)).getBytes(StandardCharsets.UTF_8)).toString();
-                String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(mission), id);
-                showVoiceWindow(owner, session, host -> {
-                    new AlertDialog.Builder(host).setTitle("Send voice channels?")
-                            .setMessage(voicePackageLabel(file, parsed) + "\n\n" + voiceLoginSummary(parsed))
-                            .setNegativeButton("Cancel", null).setPositiveButton("Send to Watch", (d, w) -> {
-                                if (owner != bleClient || session != currentWatchSession()
-                                        || !watchCapabilities.supports("voice_channels_v1", session)) return;
-                                try {
-                                    String request = watchCapabilities.requestId(session);
-                                    if (request == null) return;
-                                    JSONObject message = new JSONObject().put("msg_type", "voice_channels_v1").put("version", 1)
-                                            .put("requestId", request).put("handoff", new JSONObject(envelope));
-                                    voiceTransferId = id; voiceTransferSession = session;
-                                    voiceTransferWatchUid = watchCapabilities.watchUid(session);
-                                    boolean queued = owner.writeJsonLineToWatch(message.toString(), session);
-                                    showVoiceTransferStatus(queued ? "Voice channels queued — awaiting watch receipt" : "Voice transfer could not be queued");
-                                } catch (Exception e) { showVoiceTransferStatus("Voice transfer could not be queued"); }
-                            }).show();
-                });
+                reviewBluetoothLogin(file, owner, session, mission);
             } catch (Exception e) {
                 showVoiceWindow(owner, session, host -> new AlertDialog.Builder(host)
-                        .setMessage("Unsupported or invalid VX voice channel package.")
-                        .setPositiveButton("OK", null).show());
+                        .setMessage("Unsupported or invalid VX voice channel package.").setPositiveButton("OK", null).show());
             }
         }, "WearTAK-Voice-Import").start();
+    }
+
+    private void reviewBluetoothLogin(java.io.File file, WearTakBleClient owner, long session, byte[] mission) {
+        try {
+            se.takcampus.voice.VoiceMission parsed = se.takcampus.voice.VoicePackageImporter.fromJson(mission);
+            String id = java.util.UUID.nameUUIDFromBytes((MapView.getDeviceUid() + ":" + watchCapabilities.watchUid(session) + ":"
+                    + se.takcampus.voice.VoiceHandoff.hash(mission)).getBytes(StandardCharsets.UTF_8)).toString();
+            String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(mission), id);
+            showVoiceWindow(owner, session, host -> {
+                new AlertDialog.Builder(host).setTitle("Send voice channels?")
+                        .setMessage(voicePackageLabel(file, parsed) + "\n\n" + voiceLoginSummary(parsed))
+                        .setNeutralButton("Set Mumble login", (d,w) -> new VoiceAuthDialog(host, mission, parsed, voiceProfiles(),
+                            () -> owner == bleClient && session == currentWatchSession(),
+                            updated -> reviewBluetoothLogin(file, owner, session, updated)).open())
+                        .setNegativeButton("Cancel", null).setPositiveButton("Send to Watch", (d, w) -> {
+                            if (owner != bleClient || session != currentWatchSession()
+                                    || !watchCapabilities.supports("voice_channels_v1", session)) return;
+                            try {
+                                String request = watchCapabilities.requestId(session);
+                                if (request == null) return;
+                                JSONObject message = new JSONObject().put("msg_type", "voice_channels_v1").put("version", 1)
+                                        .put("requestId", request).put("handoff", new JSONObject(envelope));
+                                voiceTransferId = id; voiceTransferSession = session;
+                                voiceTransferWatchUid = watchCapabilities.watchUid(session);
+                                boolean queued = owner.writeJsonLineToWatch(message.toString(), session);
+                                showVoiceTransferStatus(queued ? "Voice channels queued — awaiting watch receipt" : "Voice transfer could not be queued");
+                            } catch (Exception e) { showVoiceTransferStatus("Voice transfer could not be queued"); }
+                        }).show();
+            });
+        } catch (Exception e) {
+            showVoiceWindow(owner, session, host -> new AlertDialog.Builder(host)
+                    .setMessage("Unsupported or invalid VX voice channel package.")
+                    .setPositiveButton("OK", null).show());
+        }
     }
 
     private void refreshIdentityStatus() {

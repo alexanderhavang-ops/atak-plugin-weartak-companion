@@ -40,14 +40,14 @@ final class WifiVoiceSender implements AutoCloseable {
     private final Handler main = new Handler(Looper.getMainLooper());
     private Session session;
 
-    void open(Context context, String label, String envelope) {
+    void open(Context context, String label, String loginSummary, String envelope) {
         close();
         Network wifi = findWifi(context);
         if (wifi == null) {
             notice(context, "Connect the phone and watch to the same Wi-Fi network.");
             return;
         }
-        session = new Session(context, wifi, label, envelope);
+        session = new Session(context, wifi, label, loginSummary, envelope);
         session.browse();
     }
 
@@ -80,6 +80,7 @@ final class WifiVoiceSender implements AutoCloseable {
         private final Context host;
         private final Network wifi;
         private final String label;
+        private final String loginSummary;
         private final String envelope;
         private final NsdManager nsd;
         private final Map<String, NsdServiceInfo> watches = new LinkedHashMap<>();
@@ -99,10 +100,11 @@ final class WifiVoiceSender implements AutoCloseable {
         private boolean discovering;
         private boolean resolving;
 
-        Session(Context host, Network wifi, String label, String envelope) {
+        Session(Context host, Network wifi, String label, String loginSummary, String envelope) {
             this.host = host;
             this.wifi = wifi;
             this.label = label;
+            this.loginSummary = loginSummary;
             this.envelope = envelope;
             nsd = host.getSystemService(NsdManager.class);
         }
@@ -246,7 +248,7 @@ final class WifiVoiceSender implements AutoCloseable {
             if (Build.VERSION.SDK_INT >= 26) input.setImportantForAutofill(EditText.IMPORTANT_FOR_AUTOFILL_NO);
             input.setHint("8-digit code");
             AlertDialog prompt = new AlertDialog.Builder(host).setTitle(name)
-                    .setMessage("Enter the code shown on the watch to send “" + label + "”.")
+                    .setMessage("Enter the code shown on the watch to send “" + label + "”.\n\n" + loginSummary)
                     .setView(input).setPositiveButton("Send", null).setNegativeButton("Cancel", null).create();
             dialog = prompt;
             prompt.setOnDismissListener(ignored -> { input.setText(""); WifiVoiceSender.this.close(); });

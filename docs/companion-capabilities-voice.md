@@ -47,7 +47,7 @@ The implementation is a development fork/proposal, not a claim that stock WearTA
 9. **Connect voice explicitly.** Use Voice's own configured Mumble login/TLS identity.
    If it is missing, offer Server & login or the existing acoustic setup flow.
    Importing channels does not connect, install trust, enroll a certificate, or
-   expose WearTAK's private keys. The package has no Mumble password.
+   expose WearTAK's private keys. The selected ZIP can supply a Mumble account or a shared server password. Companion preserves it. For a missing login, Companion can include a matching host’s saved ATAK account after the sender reviews the destination.
 
 ```mermaid
 flowchart TD
@@ -83,7 +83,7 @@ not needed for the standalone APK.
 | --- | --- | --- |
 | Existing TAK connection login/certificate | WearTAK's TAK connection and package download | Neither changed nor exposed to Voice |
 | VX mission/channel data | Shared Voice importer | Transferred and reviewed |
-| Mumble login, voice client identity and private CA | Voice's own TLS connection | Existing Voice setup or an explicit Voice setup step |
+| Mumble login, voice client identity and private CA | Voice's own TLS connection | The selected ZIP may supply a login. Client certificates and private CAs use Voice setup. |
 | Callsign/team/color | TAK identity/display | Separate from authentication; existing ATAK identity transfer remains independent |
 
 ## Capabilities and versions
@@ -130,4 +130,4 @@ support depends on their actual Android events and needs physical qualification.
 
 ## Setup by sound
 
-Open **Voice setup** on Companion's home screen. **Play channel as sound** asks for a VX ZIP and then one of its channels. **Play HTTPS ZIP link** sends a short URL for the watch to download. **Play TAKS card link** keeps the TAKS ticket flow. Sound works with BLE disconnected. The watch reviews the result before applying it. A direct sound contains only the chosen Mumble, UDP, or RTP channel and its optional data settings. Enter any Mumble login on the watch.
+Open **Voice setup** on Companion's home screen. **Play channel as sound** asks for a VX ZIP and then one of its channels. **Play HTTPS ZIP link** sends a short URL for the watch to download. **Play TAKS card link** keeps the TAKS ticket flow. Sound works with BLE disconnected. The watch reviews the result before applying it. A direct sound contains only the chosen Mumble, UDP, or RTP channel and its optional data settings. An HTTPS ZIP link can carry a packaged login. A direct channel sound carries channel settings only.

@@ -1577,11 +1577,11 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             @Override public void onFileSelected(java.io.File file) {
                 new Thread(() -> {
                     try {
-                        byte[] data = readVoicePackage(file);
+                        byte[] data = outgoingVoicePackage(file);
                         se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(data);
-                        String envelope = se.takcampus.voice.VoiceHandoff.encode(data, java.util.UUID.randomUUID().toString());
+                        String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(data), java.util.UUID.randomUUID().toString());
                         runOnMain(() -> {
-                            if (wifiVoiceSelection == selection) wifiVoiceSender.open(host, mission.name, envelope);
+                            if (wifiVoiceSelection == selection) wifiVoiceSender.open(host, mission.name, voiceLoginSummary(mission), envelope);
                         });
                     } catch (Exception error) {
                         runOnMain(() -> {
@@ -1680,17 +1680,34 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         }
     }
 
+    private byte[] outgoingVoicePackage(java.io.File file) throws Exception {
+        return se.takcampus.voice.VoicePackageImporter.withAvailableLogins(readVoicePackage(file),
+                profile -> AtakServerSource.voiceLogin(profile.host()));
+    }
+
+    private static String voiceLoginSummary(se.takcampus.voice.VoiceMission mission) {
+        java.util.Set<String> destinations = new java.util.LinkedHashSet<>();
+        for (se.takcampus.voice.VoiceMission.Channel channel : mission.channels) {
+            se.takcampus.voice.VoiceProfile profile = channel.profile();
+            se.takcampus.voice.VoiceLogin login = mission.login(profile);
+            if (login != null) destinations.add(profile.endpoint() +
+                    (login.username.isEmpty() ? " (server password)" : " (account login)"));
+        }
+        return destinations.isEmpty() ? "Channels only. No saved Mumble login is available."
+                : "Send Mumble credentials to " + android.text.TextUtils.join(", ", destinations) + ". A missing ZIP login can be filled from the matching saved ATAK account.";
+    }
+
     private void prepareVoicePackage(java.io.File file, WearTakBleClient owner, long session) {
         new Thread(() -> {
             try {
-                byte[] mission = readVoicePackage(file);
+                byte[] mission = outgoingVoicePackage(file);
                 se.takcampus.voice.VoiceMission parsed = se.takcampus.voice.VoicePackageImporter.fromJson(mission);
                 String id = java.util.UUID.nameUUIDFromBytes((MapView.getDeviceUid() + ":" + watchCapabilities.watchUid(session) + ":"
                         + se.takcampus.voice.VoiceHandoff.hash(mission)).getBytes(StandardCharsets.UTF_8)).toString();
-                String envelope = se.takcampus.voice.VoiceHandoff.encode(mission, id);
+                String envelope = se.takcampus.voice.VoiceHandoff.encode(se.takcampus.voice.VoiceHandoff.packageForTransfer(mission), id);
                 showVoiceWindow(owner, session, host -> {
                     new AlertDialog.Builder(host).setTitle("Send voice channels?")
-                            .setMessage(voicePackageLabel(file, parsed) + "\n\nThis sends channel settings only. For a new Mumble server, set up the login separately on the watch.")
+                            .setMessage(voicePackageLabel(file, parsed) + "\n\n" + voiceLoginSummary(parsed))
                             .setNegativeButton("Cancel", null).setPositiveButton("Send to Watch", (d, w) -> {
                                 if (owner != bleClient || session != currentWatchSession()
                                         || !watchCapabilities.supports("voice_channels_v1", session)) return;

@@ -129,6 +129,25 @@ final class AtakServerSource {
     return new AtakServerImport.SavedP12(bytes, password == null ? null : password.password);
   }
 
+  /** TAKS can accept the saved TAK account on its Mumble service. */
+  static se.takcampus.voice.VoiceLogin voiceLogin(String voiceHost) {
+    se.takcampus.voice.VoiceLogin found = null;
+    try {
+      for (AtakServerImport.Connection connection : connections()) {
+        if (!connection.enabled || !voiceHost.equalsIgnoreCase(connection.host)) continue;
+        AtakServerImport.SavedLogin login = readLogin(connection);
+        if (login == null || login.username == null || login.username.isEmpty()
+            || login.password == null || login.password.isEmpty()) continue;
+        if (found != null && (!found.username.equals(login.username)
+            || !found.password.equals(login.password))) return null;
+        found = new se.takcampus.voice.VoiceLogin(login.username, login.password);
+      }
+    } catch (RuntimeException | LinkageError unavailable) {
+      return null;
+    }
+    return found;
+  }
+
   static AtakServerImport.SavedLogin readLogin(AtakServerImport.Connection c) {
     AtakServerImport.SavedLogin live = null;
     try {

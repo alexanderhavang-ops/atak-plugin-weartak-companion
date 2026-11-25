@@ -1,1 +1,1 @@
-Four unmodified channel-package protocol classes from https://github.com/alexanderhavang-ops/weartak-voice at d220764e3c212d9c31c34c51ceffba92c82bf127. GPL-3.0. Configuration only; no voice credentials. Keep synchronized with the upstream core module.
+The channel-package and handoff classes in `se.takcampus.voice` come from the [WearTAK Voice core](https://github.com/alexanderhavang-ops/weartak-voice/pull/1), licensed under GPL-3.0. Keep the importer and transport synchronized on both ends. Version 0.6.21 supports optional endpoint-scoped Mumble credentials.

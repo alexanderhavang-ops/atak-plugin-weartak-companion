@@ -94,6 +94,21 @@ public class CompanionPaneLayoutTest {
         return sibling;
     }
 
+    @Test public void dittoPanelAcceptsEshConfigurationAndMasksToken() throws Exception {
+        Document document = layout("main_layout.xml");
+        Element panel = byId(document, "dittoPanel");
+        assertSame(byId(document, "deviceScreenRoot"), panel.getParentNode());
+        for (String id : new String[]{"dittoDatabaseId", "dittoServerUrl", "dittoAuthToken",
+                "dittoConnectButton", "dittoConnectionStatus"}) {
+            assertSame(panel, byId(document, id).getParentNode());
+        }
+        assertEquals("textPassword", byId(document, "dittoAuthToken")
+                .getAttribute("android:inputType"));
+        assertEquals("@id/dittoCommunityMode", byId(document, "dittoMode")
+                .getAttribute("android:checkedButton"));
+        assertEquals("gone", byId(document, "dittoDatabaseId").getAttribute("android:visibility"));
+    }
+
     @Test public void smallLogGlyphsRetainAccessibleTouchTargets() throws Exception {
         Document document = layout("main_layout.xml");
         for (String id : new String[]{"diagnosticsToggle", "diagnosticsExportButton"}) {

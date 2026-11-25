@@ -113,8 +113,9 @@ See [the upstream proposal](SDK_VOICE_PACKAGE_API_PROPOSAL.md).
 ## Audio and PTT
 
 `MumbleConnection` provides verified TLS, bounded control/protobuf framing and
-Opus audio over Mumble's TCP tunnel. UDP, whisper/private-call compatibility,
-channel linking, multicast voice and automatic reconnect remain outside this alpha.
+Opus audio over Mumble's TCP tunnel. Local VX multicast uses UDP or RTP and an
+optional separate data channel. Mumble UDP, whisper/private calls, channel linking,
+and automatic reconnect remain outside this preview.
 The Android pipeline uses 48 kHz mono Opus, AudioRecord during PTT and AudioTrack
 for bounded receive playback. Credentials/private identities are stored in an
 atomic AES-GCM vault using an Android Keystore key; backup is disabled.
@@ -126,3 +127,7 @@ or explicit click-toggle, with a 60-second limit. Sources are tracked separately
 release, cancellation, focus/route/network loss and teardown stop transmission and
 never resume it automatically. Vendor BLE/SPP PTT devices need adapters. Buds
 support depends on their actual Android events and needs physical qualification.
+
+## Setup by sound
+
+Open **Voice setup** on Companion's home screen. **Play channel as sound** asks for a VX ZIP and then one of its channels. **Play HTTPS ZIP link** sends a short URL for the watch to download. **Play TAKS card link** keeps the TAKS ticket flow. Sound works with BLE disconnected. The watch reviews the result before applying it. A direct sound contains only the chosen Mumble, UDP, or RTP channel and its optional data settings. Enter any Mumble login on the watch.

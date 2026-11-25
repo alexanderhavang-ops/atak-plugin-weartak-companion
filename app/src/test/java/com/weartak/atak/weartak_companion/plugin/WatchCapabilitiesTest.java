@@ -54,6 +54,7 @@ public class WatchCapabilitiesTest {
     reply.getJSONObject("features").put("voice_channels_v1", 2);
     assertTrue(caps.accept(reply, 1));
     assertFalse(caps.supports("voice_channels_v1", 1));
+    reply.put("requestId", new JSONObject(caps.request(1)).getString("requestId"));
     for (int i = 0; i < 65; i++) reply.getJSONArray("plugins").put(new JSONObject());
     assertFalse(caps.accept(reply, 1));
   }
@@ -91,5 +92,39 @@ public class WatchCapabilitiesTest {
     assertNull(caps.detailsSnapshot(11));
     caps.request(10);
     assertNull(caps.detailsSnapshot(10));
+  }
+
+  @Test
+  public void retriesDroppedRequestAndTransientReceiverUntilReady() throws Exception {
+    WatchCapabilities caps = new WatchCapabilities();
+    String id = new JSONObject(caps.request(1)).getString("requestId");
+    assertTrue(caps.needsRetry(1));
+    assertEquals(id, new JSONObject(caps.retryRequest(1)).getString("requestId"));
+    JSONObject starting = response(id);
+    starting.getJSONObject("features").remove("voice_channels_v1");
+    starting.put("unavailableReasons", new JSONObject().put("voice_channels_v1", "VOICE_PLUGIN_NOT_READY"));
+    assertTrue(caps.accept(starting, 1));
+    assertTrue(caps.needsRetry(1));
+    String fresh = new JSONObject(caps.retryRequest(1)).getString("requestId");
+    assertNotEquals(id, fresh);
+    assertFalse(caps.accept(starting, 1));
+    assertTrue(caps.accept(response(fresh), 1));
+    assertFalse(caps.needsRetry(1));
+    assertFalse(caps.accept(starting.put("requestId", fresh), 1));
+    assertTrue(caps.supports("voice_channels_v1", 1));
+    caps.clear();
+    assertFalse(caps.needsRetry(1));
+    caps.request(2);
+    assertFalse(caps.accept(response(fresh), 2));
+  }
+
+  @Test
+  public void stableUnsupportedReportStopsRetries() throws Exception {
+    WatchCapabilities caps = new WatchCapabilities();
+    JSONObject report = response(new JSONObject(caps.request(4)).getString("requestId"));
+    report.getJSONObject("features").remove("voice_channels_v1");
+    report.put("unavailableReasons", new JSONObject().put("voice_channels_v1", "HOST_VOICE_STAGING_UNAVAILABLE"));
+    assertTrue(caps.accept(report, 4));
+    assertFalse(caps.needsRetry(4));
   }
 }

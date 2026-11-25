@@ -163,6 +163,32 @@ public class WatchSelfStatusTest {
         }
     }
 
+    @Test public void wearosPhysiologyUsesFreshSamplesAndCoreFormatting() throws Exception {
+        WatchSelfStatus state = new WatchSelfStatus();
+        JSONObject payload = snapshot("s1", 0, null, 72, NOW).put("deviceUid", "WATCH&UID")
+                .put("physio", new JSONObject().put("hr", 72)
+                        .put("measuredAt", Instant.ofEpochMilli(NOW - 119_000).toString())
+                        .put("sktF", 98.0).put("sktFMeasuredAt", Instant.ofEpochMilli(NOW).toString())
+                        .put("exert", 0.5).put("exertMeasuredAt", Instant.ofEpochMilli(NOW).toString()));
+        state.accept("wearos:1", payload, NOW);
+        assertEquals("<physiology><device><model>WEAROS</model><uid>WATCH&amp;UID</uid>"
+                + "<hr>72</hr><skt>98</skt><exert>0.5</exert></device></physiology>",
+                state.current(NOW).physiologyXml());
+        assertEquals("<physiology><device><model>WEAROS</model><uid>WATCH&amp;UID</uid>"
+                + "<skt>98</skt><exert>0.5</exert></device></physiology>",
+                state.current(NOW + 1_000).physiologyXml());
+        assertEquals("", state.current(NOW + WatchSelfStatus.PHYSIO_MAX_AGE_MS).physiologyXml());
+
+        state.clear();
+        state.accept("garmin:1", payload, NOW);
+        assertEquals("", state.current(NOW).physiologyXml());
+        state.clear();
+        state.accept("wearos:1", snapshot("s1", 0, null, null, 0).put("physio",
+                new JSONObject().put("exert", 0.5)
+                        .put("exertMeasuredAt", Instant.ofEpochMilli(NOW).toString())), NOW);
+        assertEquals("", state.current(NOW).physiologyXml());
+    }
+
     @Test public void legacySavedPpeWithoutSaveTimeIsAccepted() throws Exception {
         WatchSelfStatus state = new WatchSelfStatus();
         assertTrue(state.accept("link", snapshot("s1", 0, null, null, 0).put("ppe",

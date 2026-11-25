@@ -64,6 +64,7 @@ final class LegacyPliCot {
                 .append(Math.max(0, Math.min(100, battery))).append("'/>");
         if (watch != null && watch.model != null) {
             detail.append(watch.biometricsXml());
+            detail.append(watch.physiologyXml());
         } else {
             // Watches without an active SELF_STATUS snapshot keep their existing legacy heart rate.
             Integer hr = integer(payload, "hr");

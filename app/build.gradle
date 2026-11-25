@@ -8,8 +8,8 @@
 
 buildscript {
 
-    ext.PLUGIN_VERSION = "5.6.0"
-    ext.ATAK_VERSION = "5.6.0"
+    ext.PLUGIN_VERSION = "5.8.3-voice-0.6.1"
+    ext.ATAK_VERSION = "5.8.0"
 
     def takdevVersion = '3.+'
 
@@ -60,6 +60,7 @@ buildscript {
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.13.2'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20'
         if(isDevKitEnabled()) {
             classpath "com.atakmap.gradle:atak-gradle-takdev:${takdevVersion}"
         } else {
@@ -81,6 +82,7 @@ allprojects {
 }
 
 apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'atak-takdev-plugin'
 //apply from: "../gradle/typst.gradle"
 
@@ -105,6 +107,7 @@ def supportedFlavors =
 
 android {
     compileSdk 36
+    buildToolsVersion "36.0.0"
     namespace 'com.weartak.atak.weartak_companion.plugin'
 
     buildFeatures {
@@ -113,8 +116,12 @@ android {
 
     compileOptions {
         coreLibraryDesugaringEnabled true
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
     }
 
     testOptions {
@@ -246,8 +253,26 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 23
+        minSdkVersion 24
         targetSdkVersion 36
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+        def communityIdentity = providers.gradleProperty('dittoCommunityIdentity').orElse('').get().trim()
+        if (communityIdentity.startsWith('"') && communityIdentity.endsWith('"')
+                && communityIdentity.length() >= 2) {
+            communityIdentity = communityIdentity.substring(1, communityIdentity.length() - 1)
+        }
+        if (!(communityIdentity ==~ /[A-Za-z0-9_\-=]*/)) {
+            throw new GradleException('dittoCommunityIdentity must be URL-safe Base64')
+        }
+        buildConfigField 'String', 'DITTO_COMMUNITY_IDENTITY', "\"${communityIdentity}\""
+        gradle.taskGraph.whenReady { graph ->
+            if (communityIdentity.isEmpty() && graph.allTasks.any { task ->
+                task.project == project &&
+                        task.name ==~ /(?:assemble|bundle|package).*Release(?:Bundle)?/
+            }) {
+                throw new GradleException('Release builds require the protected dittoCommunityIdentity Gradle property')
+            }
+        }
 
         def runTasks = gradle.startParameter.taskNames
         if(runTasks.toString().contains('bundle')) {
@@ -302,8 +327,11 @@ def getCommandFlavor() {
 
 
 dependencies {
+    implementation "org.bouncycastle:bcprov-jdk18on:1.83"
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
     implementation fileTree(dir: 'libs', include: '*.jar')
+    implementation 'com.ditto:ditto-kotlin:5.2.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
 
     def takSdkMainJarPath = project.findProperty('tak.sdk.main.jar')
     if (takSdkMainJarPath == null) {
@@ -325,6 +353,9 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20231013'
     testImplementation 'org.mockito:mockito-core:4.11.0'
+
+    androidTestImplementation 'androidx.test:runner:1.7.0'
+    androidTestImplementation 'junit:junit:4.13.2'
 
     // This is likely pulling in appcompat transitively depending on your environment.
     implementation("com.google.android.gms:play-services-wearable:18.1.0") {
@@ -368,3 +399,12 @@ configurations.implementation {
        exclude group: 'androidx.lifecycle', module: 'lifecycle'
        exclude group: 'androidx.lifecycle', module: 'lifecycle-process'
 }       
+
+apply from: rootProject.file('gradle/ditto-serialization.gradle')
+
+// Resolve AGP API values in the plugin's buildscript classloader.
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    configureDittoSerializationIsolation(variant,
+            com.android.build.api.variant.ScopedArtifacts.Scope.ALL,
+            com.android.build.api.artifact.ScopedArtifact.CLASSES.INSTANCE)
+}

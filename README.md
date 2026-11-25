@@ -1,5 +1,15 @@
 # WearTAK ATAK Companion Plugin
 
+## Voice setup over Wi-Fi
+
+On the watch, open **Voice setup → Pair over Wi-Fi**. In ATAK Companion,
+select **Voice setup → Send over Wi-Fi**, choose a VX ZIP, select the watch ID,
+and enter its eight-digit code. Confirm the channel list on the watch before
+saving. Pairing uses Android DNS-SD on the local IPv4 Wi-Fi network and protects
+the transfer and its receipt with authenticated TLS. A Bluetooth connection is
+optional for this voice setup path.
+
+
 ## Purpose and Capabilities
 
 WearTAK is an ATAK companion plugin that connects ATAK with supported
@@ -10,6 +20,8 @@ the Garmin Connect IQ relay and an exclusive three-mode connection selector.
 The optional Garmin Connect IQ
 transport uses Garmin Connect Mobile on the phone rather than the
 Samsung/Wear OS BLE connection.
+The plugin also supports Ditto Community peer-to-peer sync and an optional
+Ditto ESH connection.
 
 The phone-to-WearOS point relay forwards all non-user `a-*` atoms (including
 aircraft, surface and detailed ground types) plus SPI `b-m-p-s-p-i`, preserving
@@ -41,7 +53,7 @@ Open **Configure Watch → Saved servers and settings → Refresh from Watch** t
 read the current watch settings. **Import from ATAK** and **Manual setup** are
 separate actions. **Voice channels** is available when the current watch reports
 a ready receiver. See [server import](docs/atak-server-import.md) and
-[voice onboarding](docs/companion-capabilities-voice.md).
+[voice onboarding](docs/companion-capabilities-voice.md). The **Voice setup** action also plays a single channel, an HTTPS ZIP link, or a TAKS card as a setup sound. On the watch, open **Voice setup → Listen for setup sound** before playing it.
 
 ## Status
 
@@ -67,7 +79,7 @@ is established here.
 ## Equipment Required
 
 - Android phone/tablet running the matching ATAK host; current build configuration
-  targets ATAK 5.6.0 and Android API 23 or later.
+  targets ATAK 5.6.0 and Android API 24 or later.
 - Compatible WearTAK watch and Bluetooth for watch transport. Grant the ATAK host
   the Bluetooth/location permissions required by its Android version.
 - Samsung Wearable mode: existing system bond established through Galaxy Wearable
@@ -93,7 +105,7 @@ Developer Notes.
 
 Plugin version 5.6.0 targets ATAK 5.6.0 (plugin-api com.atakmap.app@5.6.0.CIV for
 the CIV variant). Use JDK 17 to run Gradle 8.14.3 with Android Gradle Plugin
-8.13.2, Android SDK platform 36, compile/target SDK 36, and minimum SDK 23.
+8.13.2, Android SDK platform 36, compile/target SDK 36, and minimum SDK 24.
 Java source and bytecode compatibility remain Java 8.
 
 TPP should configure its authenticated takrepo.url/user/password in
@@ -116,16 +128,48 @@ or release packaging/signing.
 
 ## Developer Notes
 
+### Ditto connections
+
+Community peer-to-peer is the default Ditto mode. Builds need the authorized
+`dittoCommunityIdentity` Gradle property, provided securely by the build
+environment; without it Community sync reports a missing license. The value
+is bundled in the APK and must not be committed or printed in diagnostics.
+Release APK/AAB builds require the protected
+`ORG_GRADLE_PROJECT_dittoCommunityIdentity` environment variable (or equivalent
+Gradle property) and fail when absent. Debug builds and MR tests can run without
+it; those builds cannot start Community sync until supplied a license.
+Anyone with the APK can extract its shared key and join the shared mesh, so
+distribute the APK only to authorized users. Community sync uses the PDL's app
+ID, shared key and offline license token; it does not authenticate to ESH.
+Starting sync does not establish that a peer is connected.
+
+Community status shows visible-peer count and Ditto-only forwarding counters,
+separating initial cache from later forwards. Peer counts do not identify a
+specific watch; counters alone do not prove live transfer. Signed ATAK-host
+presence/exchange validation remains pending.
+
+Select ESH server to enter a Ditto database ID, ESH server URL, and development
+token, then starts Ditto sync in the plugin. Companion does not persist or log
+the token; it clears the input after use. Sync stops when the plugin stops.
+The local replica uses an app-private, database-ID-scoped directory to avoid
+colliding with another Ditto plugin; reconnect attempts are serialized.
+The plugin subscribes to the existing WearTAK v2 `track`, `mapitem`, and `alert`
+collections and imports supported CoT position, marker, alert, and chat events
+into ATAK. Point deletion is honored only for the existing `weartakPoint`
+tombstone contract and Ditto-imported markers. Routes are not imported.
+The UI reports ESH connected only when Ditto's `system:data_sync_info`
+observer reports a connected server; a running sync alone is not proof of
+remote connectivity.
+
 ### Repositories
 
 The TAK Forge repository is canonical; GitHub is secondary.
-The canonical `develop` pipeline can publish signed CIV builds to a stable
-GitHub release. See
+The protected `main` pipeline builds and signs CIV APKs, then publishes them
+to a stable GitHub release. See
 [docs/github-release-publishing.md](docs/github-release-publishing.md) for the
 protected-token setup and publication behavior.
 
-The pipeline description above reflects the checked-in `develop`-gated CI rules,
-not a claim that the current default `main` branch triggers publishing.
+The pipeline description above reflects the checked-in `main`-gated CI rules.
 Historical integration notes below retain their original branch, version, test
 counts, and behavior statements; later feature notes may supersede them.
 
@@ -174,8 +218,8 @@ presence-only `__video: {}` camera classification; stream URLs and other video
 attributes are never sent to Garmin. Coordinate-free `t-x-d-d` deletion events
 are relayed; map removals delete only entities previously published by the phone.
 The MR-only `field_report_regressions` job runs these transport-independent JUnit
-regressions without signing an APK. The existing protected-`develop` signed
-release pipeline remains unchanged.
+regressions without signing an APK. Protected `main` pushes run the signed
+release pipeline.
 
 ### ATAK display units
 
@@ -515,6 +559,12 @@ The phone appends one managed line to ATAK's `userRemarks`, e.g.
 `skt` is in °F for model `WEAROS` and in °C otherwise, matching the physiology dashboard,
 which ignores a device without `hr`. When another provider already publishes `biometrics`,
 the watch device is merged into it; that provider's devices are preserved.
+
+For a connected WearOS watch, the phone's PLI also carries the watch UID and fresh samples in
+`<physiology><device><model>WEAROS</model><uid>WATCH_UID</uid>...</device></physiology>`.
+The event UID and Android `takv`/`status` remain unchanged. The tag is withheld when another
+provider has a physiology detail, no fresh heart-rate or skin-temperature sample indicates wear,
+or the last snapshot is 120 s old. Watch battery is omitted because SELF_STATUS does not provide it.
 
 Each metric is fresh only while its actual measurement time is no more than 120 s old (30 s future
 skew allowed); receipt time is never used. The managed line and biometrics are removed when:

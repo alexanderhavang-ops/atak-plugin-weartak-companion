@@ -15,6 +15,25 @@ final class WatchCapabilities {
     session = readySession;
     requestId = UUID.randomUUID().toString();
     snapshot = null;
+    return encodeRequest();
+  }
+
+  boolean needsRetry(long readySession) {
+    if (session != readySession || readySession < 0) return false;
+    if (snapshot == null) return true;
+    JSONObject reasons = snapshot.optJSONObject("unavailableReasons");
+    return !supports("voice_channels_v1", readySession) && reasons != null
+        && "VOICE_PLUGIN_NOT_READY".equals(reasons.optString("voice_channels_v1"));
+  }
+
+  String retryRequest(long readySession) throws Exception {
+    if (!needsRetry(readySession)) throw new IllegalStateException("No pending capability check");
+    // Keep a delayed first response valid. After a transient report, ask for a new snapshot.
+    if (snapshot != null) return request(readySession);
+    return encodeRequest();
+  }
+
+  private String encodeRequest() throws Exception {
     return new JSONObject()
         .put("msg_type", "request_capabilities")
         .put("version", 1)
@@ -31,6 +50,7 @@ final class WatchCapabilities {
 
   boolean accept(JSONObject response, long readySession) {
     if (session != readySession
+        || snapshot != null
         || requestId == null
         || !requestId.equals(response.optString("requestId"))
         || !Integer.valueOf(1).equals(response.opt("version"))) return false;

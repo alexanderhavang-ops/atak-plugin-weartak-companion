@@ -1,10 +1,13 @@
 package com.weartak.atak.weartak_companion.plugin;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.BroadcastReceiver;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -28,8 +31,10 @@ import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.LinearLayout;
+import android.widget.RadioGroup;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -60,11 +65,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import gov.tak.api.plugin.IPlugin;
 import gov.tak.api.plugin.IServiceController;
@@ -144,6 +152,24 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
     private final AtakServerImport.Session atakServerImport = new AtakServerImport.Session();
     private enum SettingsPage { CONFIGURE, READBACK, MANUAL }
     private SettingsPage settingsPage = SettingsPage.CONFIGURE;
+    private EditText dittoDatabaseIdET;
+    private EditText dittoServerUrlET;
+    private EditText dittoAuthTokenET;
+    private RadioGroup dittoMode;
+    private boolean dittoCommunityMode = true;
+    private Button dittoConnectButton;
+    private TextView dittoConnectionStatusTV;
+    private String dittoDatabaseIdValue = "";
+    private String dittoServerUrlValue = "";
+    private boolean dittoSyncStarting;
+    private volatile boolean dittoPluginStarted;
+    private volatile boolean dittoEshConnected;
+    private DittoMeshDiagnostics dittoMeshDiagnostics = new DittoMeshDiagnostics();
+    private final AtomicLong dittoUiGeneration = new AtomicLong();
+    private final LinkedHashMap<String, String> dittoDocumentFingerprints = new LinkedHashMap<>();
+    private static final int DITTO_PERMISSION_REQUEST_CODE = 5310;
+    private View serverSettingsGroup;
+    private Button standaloneSetupButton;
     private final SettingsSessionGuard settingsSession = new SettingsSessionGuard();
     private final PhoneManagementRelease managementRelease = new PhoneManagementRelease();
     private Object releasePeer;
@@ -186,6 +212,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                     }
                     if (garminClient != null) garminClient.stop();
                     systemBondedConnection = null;
+                    clearWatchCapabilities();
                     bleClient = null;
                     garminClient = null;
                     currentConnectedAddress = null;
@@ -248,12 +275,17 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
     private View settingsScreenRoot;
 
     // Device screen
+    private static final long[] CAPABILITY_RETRY_MS = {2000, 5000, 10000, 20000};
+    private Runnable capabilityRetry;
     private final WatchCapabilities watchCapabilities = new WatchCapabilities();
     private View watchCapabilitiesPanel;
     private View watchSettingsButton;
     private WatchDetailsDialog watchDetailsDialog;
     private TextView voiceTransferStatus;
     private Button voiceChannelsButton;
+    private final VoiceSetupSound voiceSetupSound = new VoiceSetupSound();
+    private final WifiVoiceSender wifiVoiceSender = new WifiVoiceSender();
+    private int wifiVoiceSelection;
     private String voiceTransferId;
     private long voiceTransferSession = -1;
     private String voiceTransferWatchUid;
@@ -633,6 +665,14 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             return;
         }
 
+        dittoPluginStarted = true;
+        dittoUiGeneration.incrementAndGet();
+        dittoSyncStarting = false;
+        dittoEshConnected = false;
+        synchronized (dittoDocumentFingerprints) {
+            dittoDocumentFingerprints.clear();
+        }
+        DittoEshConnection.startSession();
         initializeDiagnosticLogger();
         identityObserverActive = true;
         MapView identityMap = MapView.getMapView();
@@ -701,12 +741,13 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         }
         systemBondedEnabled = connectionModes.getMode() == ConnectionModeController.Mode.SAMSUNG;
         if (bleClient == null) {
-            watchCapabilities.clear();
-        bleClient = new WearTakBleClient(pluginContext, null);
+            bleClient = new WearTakBleClient(pluginContext, null);
         }
-        bleClient.setStatusListener((WearTakBleClient.RefreshAwareStatusListener) (connected, refreshing) -> {
+        final WearTakBleClient owner = bleClient;
+        owner.setStatusListener((WearTakBleClient.RefreshAwareStatusListener) (connected, refreshing) -> {
                 runOnMain(() -> {
-                    if (!connectionModes.isCurrent(token)) return;
+                    if (!connectionModes.isCurrent(token) || owner != bleClient) return;
+                    if (!connected) clearWatchCapabilities();
                     if (!connected) failManagementRelease("Watch disconnected before acknowledgement.");
                     if (!connected) stopLocationDiagnostics("watch disconnected");
                     if (!connected && selfPli != null) selfPli.clear("watch disconnected");
@@ -771,9 +812,8 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         registerMapItemListener();
         bleClient.setAutomaticReconnectAllowed(
                 connectionModes.getMode() == ConnectionModeController.Mode.TRADITIONAL);
-        bleClient.start();
 
-        bleClient.setJsonListener(new WearTakBleClient.JsonListener() {
+        owner.setJsonListener(new WearTakBleClient.JsonListener() {
             @Override
             public void onBluetoothStateChanged(boolean available) {
                 runOnMain(() -> {
@@ -787,10 +827,12 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
 
             @Override
             public void onReady() {
+                final long session = owner.getReadySession();
                 LogX.i(TAG, "BLE READY");
                 runOnMain(() -> {
                     if (!connectionModes.isCurrent(token)) return;
-                    if (!bleClient.isConnected()) return;
+                    if (owner != bleClient || session < 0 || owner.getReadySession() != session) return;
+                    clearWatchCapabilities();
                     pairingRecovery = null;
                     updatePairingRecoveryUi();
                     phoneSettingsPushedThisConnection = false;
@@ -812,11 +854,11 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             @Override
             public void onJson(String jsonLine) {
                 final long settingsToken = settingsSession.token();
-                final WearTakBleClient incomingOwner = bleClient;
-                final long incomingSession = incomingOwner == null ? -1 : incomingOwner.getReadySession();
+                final WearTakBleClient incomingOwner = owner;
+                final long incomingSession = owner.getReadySession();
                 runOnMain(() -> {
-                if (!connectionModes.isCurrent(token) || !settingsSession.isCurrent(settingsToken)) return;
-                if (incomingOwner == null || incomingOwner != bleClient || incomingSession < 0
+                if (!connectionModes.isCurrent(token)) return;
+                if (incomingOwner != bleClient || incomingSession < 0
                         || incomingOwner.getReadySession() != incomingSession) return;
                 LogX.d(TAG, "RX JSON bytes=" + jsonLine.getBytes(StandardCharsets.UTF_8).length);
                 try {
@@ -825,6 +867,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                             pointEnvelope.optString("msg_type", ""));
                     if ("watch_capabilities".equals(diagnosticType)) {
                         if (watchCapabilities.accept(pointEnvelope, incomingSession)) {
+                            if (!watchCapabilities.needsRetry(incomingSession)) cancelCapabilityRetry();
                             updateCapabilitiesUi();
                             renderWatchDetails();
                             if (voiceTransferId != null && voiceTransferWatchUid != null
@@ -835,6 +878,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                         }
                         return;
                     }
+                    if (!settingsSession.isCurrent(settingsToken)) return;
                     if ("watch_info".equals(diagnosticType)) {
                         watchCapabilities.legacy(pointEnvelope.optJSONObject("payload"));
                         updateCapabilitiesUi();
@@ -1055,6 +1099,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                 });
             }
         });
+        owner.start();
         startPhoneAlertForwarding(token);
         bleCotBridge.startChatForwarding(bleClient);
         if (systemBondedConnection == null) {
@@ -1363,7 +1408,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             boolean ready = connected && watchCapabilities.supports("voice_channels_v1", session);
             voiceChannelsButton.setEnabled(ready);
             TextView reason = paneView.findViewById(R.id.voiceReadinessStatus);
-            reason.setText(R.string.companion_voice_unavailable);
+            reason.setText(capabilityRetry != null ? R.string.companion_voice_checking : R.string.companion_voice_unavailable);
             reason.setVisibility(connected && !ready ? View.VISIBLE : View.GONE);
         }
         renderWatchHome();
@@ -1423,15 +1468,43 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         voiceTransferStatus.setVisibility(View.VISIBLE);
     }
 
+    private void cancelCapabilityRetry() {
+        if (capabilityRetry != null) mainHandler.removeCallbacks(capabilityRetry);
+        capabilityRetry = null;
+    }
+
+    private void clearWatchCapabilities() {
+        cancelCapabilityRetry();
+        watchCapabilities.clear();
+    }
+
     private void requestWatchCapabilities() {
-        if (gatewayPurpose || currentWatchSession() < 0) { updateCapabilitiesUi(); return; }
-        try {
-            long session = currentWatchSession();
-            // The request nonce and write must belong to the same ready connection.
-            bleClient.writeJsonLineToWatch(watchCapabilities.request(session), session);
-        } catch (Exception e) { LogX.w(TAG, "Capabilities request failed"); }
+        cancelCapabilityRetry();
+        long session = currentWatchSession();
+        if (!gatewayPurpose && session >= 0) sendCapabilityRequest(bleClient, session, 0);
         updateCapabilitiesUi();
         renderWatchDetails();
+    }
+
+    private void sendCapabilityRequest(WearTakBleClient owner, long session, int attempt) {
+        try {
+            String request = attempt == 0 ? watchCapabilities.request(session)
+                    : watchCapabilities.retryRequest(session);
+            if (!owner.writeJsonLineToWatch(request, session)) LogX.w(TAG, "Capabilities request not queued");
+        } catch (Exception e) {
+            LogX.w(TAG, "Capabilities request failed", e);
+        }
+        if (attempt < CAPABILITY_RETRY_MS.length) {
+            capabilityRetry = () -> {
+                capabilityRetry = null;
+                if (owner == bleClient && owner.getReadySession() == session && watchCapabilities.needsRetry(session)) {
+                    sendCapabilityRequest(owner, session, attempt + 1);
+                    updateCapabilitiesUi();
+                    renderWatchDetails();
+                }
+            };
+            mainHandler.postDelayed(capabilityRetry, CAPABILITY_RETRY_MS[attempt]);
+        }
     }
 
     private void requestVoiceStatus() {
@@ -1448,21 +1521,22 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         if (owner == null || !watchCapabilities.supports("voice_channels_v1", session)) return;
         // ATAK's public mission-package directory, never VX private preferences or credentials.
         new Thread(() -> {
-            java.util.List<java.io.File> files = new ArrayList<>();
+            java.util.Map<java.io.File, String> packages = new java.util.LinkedHashMap<>();
             try {
                 com.atakmap.android.missionpackage.MissionPackageMapComponent component =
                         com.atakmap.android.missionpackage.MissionPackageMapComponent.getInstance();
-                if (component != null) collectVoicePackages(new java.io.File(component.getFileIO().getMissionPackagePath()), files, 0, new int[]{512});
+                if (component != null) collectVoicePackages(new java.io.File(component.getFileIO().getMissionPackagePath()), packages, 0, new int[]{512});
             } catch (Exception | LinkageError failure) {
                 LogX.w(TAG, "Could not list ATAK voice packages", failure);
             }
-            if (files.isEmpty()) {
+            if (packages.isEmpty()) {
                 browseVoicePackage(owner, session);
                 return;
             }
             showVoiceWindow(owner, session, host -> {
+                java.util.List<java.io.File> files = new ArrayList<>(packages.keySet());
                 String[] names = new String[files.size() + 1];
-                for (int i = 0; i < files.size(); i++) names[i] = files.get(i).getName();
+                for (int i = 0; i < files.size(); i++) names[i] = packages.get(files.get(i));
                 names[files.size()] = "Choose another VX package…";
                 new AlertDialog.Builder(host).setTitle("Voice packages in ATAK")
                         .setItems(names, (d, which) -> {
@@ -1473,7 +1547,80 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
         }, "WearTAK-Voice-Packages").start();
     }
 
-    private void collectVoicePackages(java.io.File directory, java.util.List<java.io.File> result, int depth, int[] budget) {
+    private void openVoiceSetup() {
+        MapView map = MapView.getMapView();
+        if (map == null) return;
+        final Context host = map.getContext();
+        java.util.List<String> options = new ArrayList<>();
+        java.util.List<Runnable> actions = new ArrayList<>();
+        options.add("Send over Wi-Fi");
+        actions.add(() -> chooseWifiVoicePackage(host));
+        if (watchCapabilities.supports("voice_channels_v1", currentWatchSession())) {
+            options.add("Send over Bluetooth");
+            actions.add(this::chooseVoiceChannels);
+        }
+        options.add("Play channel as sound");
+        actions.add(() -> chooseSoundChannel(host));
+        options.add("Play HTTPS ZIP link");
+        actions.add(() -> voiceSetupSound.open(host, false));
+        options.add("Play TAKS card link");
+        actions.add(() -> voiceSetupSound.open(host, true));
+        new AlertDialog.Builder(host).setTitle("Voice setup")
+                .setItems(options.toArray(new String[0]), (dialog, selected) -> actions.get(selected).run())
+                .setNegativeButton("Close", null).show();
+    }
+
+    private void chooseWifiVoicePackage(Context host) {
+        int selection = ++wifiVoiceSelection;
+        ImportFileBrowserDialog.show("Choose VX voice ZIP", new String[]{"zip"}, new ImportFileBrowserDialog.DialogDismissed() {
+            @Override public void onDialogClosed() { }
+            @Override public void onFileSelected(java.io.File file) {
+                new Thread(() -> {
+                    try {
+                        byte[] data = readVoicePackage(file);
+                        se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(data);
+                        String envelope = se.takcampus.voice.VoiceHandoff.encode(data, java.util.UUID.randomUUID().toString());
+                        runOnMain(() -> {
+                            if (wifiVoiceSelection == selection) wifiVoiceSender.open(host, mission.name, envelope);
+                        });
+                    } catch (Exception error) {
+                        runOnMain(() -> {
+                            if (wifiVoiceSelection == selection) new AlertDialog.Builder(host)
+                                    .setMessage("Could not read this VX voice ZIP.").setPositiveButton("OK", null).show();
+                        });
+                    }
+                }, "WearTAK-WiFi-Voice-Package").start();
+            }
+        }, host);
+    }
+
+    private void chooseSoundChannel(Context host) {
+        ImportFileBrowserDialog.show("Choose VX voice ZIP", new String[]{"zip"}, new ImportFileBrowserDialog.DialogDismissed() {
+            @Override public void onDialogClosed() { }
+            @Override public void onFileSelected(java.io.File file) {
+                new Thread(() -> {
+                    try {
+                        se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(readVoicePackage(file));
+                        String[] labels = new String[mission.channels.size()];
+                        for (int i = 0; i < labels.length; i++) labels[i] = mission.channels.get(i).name;
+                        runOnMain(() -> new AlertDialog.Builder(host).setTitle("Choose channel to play")
+                                .setItems(labels, (dialog, which) -> {
+                                    try { voiceSetupSound.playChannel(host, mission.channels.get(which).profile()); }
+                                    catch (Exception error) {
+                                        new AlertDialog.Builder(host).setMessage("This channel does not fit in one sound code. Use the ZIP link or Bluetooth.")
+                                                .setPositiveButton("OK", null).show();
+                                    }
+                                }).setNegativeButton("Cancel", null).show());
+                    } catch (Exception error) {
+                        runOnMain(() -> new AlertDialog.Builder(host).setMessage("Could not read this VX voice ZIP.")
+                                .setPositiveButton("OK", null).show());
+                    }
+                }, "WearTAK-Voice-Sound").start();
+            }
+        }, host);
+    }
+
+    private void collectVoicePackages(java.io.File directory, java.util.Map<java.io.File, String> result, int depth, int[] budget) {
         if (depth > 3 || result.size() >= 32 || budget[0] <= 0) return;
         java.io.File[] files = com.atakmap.coremap.io.IOProviderFactory.listFiles(directory);
         if (files == null || files.length > 512) return;
@@ -1481,10 +1628,20 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             if (--budget[0] < 0) return;
             if (com.atakmap.coremap.io.IOProviderFactory.isDirectory(file)) collectVoicePackages(file, result, depth + 1, budget);
             else if (file.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".zip")) {
-                try { readVoicePackage(file); result.add(file); } catch (Exception ignored) { }
+                try {
+                    se.takcampus.voice.VoiceMission mission = se.takcampus.voice.VoicePackageImporter.fromJson(readVoicePackage(file));
+                    result.put(file, voicePackageLabel(file, mission));
+                } catch (Exception ignored) { }
             }
             if (result.size() >= 32) return;
         }
+    }
+
+    private static String voicePackageLabel(java.io.File file, se.takcampus.voice.VoiceMission mission) {
+        se.takcampus.voice.VoiceMission.Channel first = mission.channels.get(0);
+        int others = mission.channels.size() - 1;
+        return file.getName() + "\n" + mission.name + " · " + first.name + " (" + first.host + ":" + first.port
+                + ")" + (others == 0 ? "" : " · +" + others + " more");
     }
 
     private void browseVoicePackage(WearTakBleClient owner, long session) {
@@ -1533,7 +1690,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                 String envelope = se.takcampus.voice.VoiceHandoff.encode(mission, id);
                 showVoiceWindow(owner, session, host -> {
                     new AlertDialog.Builder(host).setTitle("Send voice channels?")
-                            .setMessage(parsed.name + " · " + parsed.channels.size() + " channels\n\nReview on the watch. Voice login and TLS identity are configured separately.")
+                            .setMessage(voicePackageLabel(file, parsed) + "\n\nThis sends channel settings only. For a new Mumble server, set up the login separately on the watch.")
                             .setNegativeButton("Cancel", null).setPositiveButton("Send to Watch", (d, w) -> {
                                 if (owner != bleClient || session != currentWatchSession()
                                         || !watchCapabilities.supports("voice_channels_v1", session)) return;
@@ -1922,11 +2079,32 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
 
     @Override
     public void onStop() {
+        dittoPluginStarted = false;
+        dittoEshConnected = false;
+        long stopGeneration = DittoEshConnection.invalidateSession();
+        long uiGeneration = dittoUiGeneration.incrementAndGet();
+        synchronized (dittoDocumentFingerprints) {
+            dittoDocumentFingerprints.clear();
+        }
+        new Thread(() -> {
+            try {
+                DittoEshConnection.stopSync(stopGeneration);
+            } catch (RuntimeException e) {
+                LogX.e(TAG, "Ditto shutdown failed; type=" + e.getClass().getSimpleName());
+            }
+        }, "WTK-Ditto-stop").start();
         runOnMain(() -> {
+            voiceSetupSound.close();
+            ++wifiVoiceSelection;
+            wifiVoiceSender.close();
             dismissWatchDetails();
             cancelAtakServerImport();
             if (atakServerImportWorker != null) atakServerImportWorker.shutdownNow();
             atakServerImportWorker = null;
+            if (dittoUiGeneration.get() == uiGeneration) {
+                dittoSyncStarting = false;
+                updateDittoConnectionStatus("Not connected");
+            }
             identityObserverActive = false;
             receivedCotTiming.stop();
             phoneIdentityObserver.stop();
@@ -1947,6 +2125,284 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
                 diagnosticLogger = null;
             }
         });
+    }
+
+    private boolean requestDittoPermissions() {
+        Context context = MapView.getMapView() == null
+                ? pluginContext : MapView.getMapView().getContext();
+        if (context == null) return false;
+
+        ArrayList<String> missing = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            addMissingPermission(context, missing, Manifest.permission.BLUETOOTH_ADVERTISE);
+            addMissingPermission(context, missing, Manifest.permission.BLUETOOTH_CONNECT);
+            addMissingPermission(context, missing, Manifest.permission.BLUETOOTH_SCAN);
+        }
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2) {
+            addMissingPermission(context, missing, Manifest.permission.ACCESS_FINE_LOCATION);
+            addMissingPermission(context, missing, Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            addMissingPermission(context, missing, Manifest.permission.NEARBY_WIFI_DEVICES);
+        }
+        if (missing.isEmpty()) return true;
+
+        Activity activity = findHostActivity(context);
+        if (activity != null) {
+            activity.requestPermissions(missing.toArray(new String[0]),
+                    DITTO_PERMISSION_REQUEST_CODE);
+            updateDittoConnectionStatus("Grant nearby-device permissions, then tap Connect again.");
+        } else {
+            updateDittoConnectionStatus("Grant Ditto nearby-device permissions in Android Settings.");
+        }
+        return false;
+    }
+
+    private static void addMissingPermission(Context context, List<String> missing,
+            String permission) {
+        if (ContextCompat.checkSelfPermission(context, permission)
+                != PackageManager.PERMISSION_GRANTED) {
+            missing.add(permission);
+        }
+    }
+
+    private static Activity findHostActivity(Context context) {
+        Context current = context;
+        while (current instanceof ContextWrapper) {
+            if (current instanceof Activity) return (Activity) current;
+            Context next = ((ContextWrapper) current).getBaseContext();
+            if (next == current) break;
+            current = next;
+        }
+        return current instanceof Activity ? (Activity) current : null;
+    }
+
+    private void updateDittoConnectionStatus(String status) {
+        if (dittoConnectionStatusTV != null) dittoConnectionStatusTV.setText(status);
+        if (dittoConnectButton != null) {
+            boolean active = DittoEshConnection.isSyncActive();
+            dittoConnectButton.setEnabled(!dittoSyncStarting);
+            dittoConnectButton.setText(active ? "Disconnect"
+                    : dittoCommunityMode ? "Start Community sync" : "Connect to ESH");
+            dittoMode.findViewById(R.id.dittoCommunityMode).setEnabled(!active && !dittoSyncStarting);
+            dittoMode.findViewById(R.id.dittoEshMode).setEnabled(!active && !dittoSyncStarting);
+        }
+    }
+
+    private void updateDittoMode() {
+        int visibility = dittoCommunityMode ? View.GONE : View.VISIBLE;
+        dittoDatabaseIdET.setVisibility(visibility);
+        dittoServerUrlET.setVisibility(visibility);
+        dittoAuthTokenET.setVisibility(visibility);
+        updateDittoConnectionStatus("Not connected");
+    }
+
+    private void onDittoConnectionClicked() {
+        if (!dittoPluginStarted || dittoSyncStarting) return;
+        if (DittoEshConnection.isSyncActive()) {
+            dittoSyncStarting = true;
+            updateDittoConnectionStatus("Disconnecting from Ditto...");
+            final long uiGeneration = dittoUiGeneration.incrementAndGet();
+            new Thread(() -> {
+                try {
+                    DittoEshConnection.disconnect();
+                    runOnMain(() -> {
+                        if (!isCurrentDittoUi(uiGeneration)) return;
+                        dittoSyncStarting = false;
+                        dittoEshConnected = false;
+                        updateDittoConnectionStatus("Not connected");
+                    });
+                } catch (Exception e) {
+                    String category = DittoConnectionDiagnostics.category(e);
+                    LogX.e(TAG, "Ditto disconnect failed; category=" + category
+                            + ", type=" + e.getClass().getSimpleName());
+                    runOnMain(() -> {
+                        if (!isCurrentDittoUi(uiGeneration)) return;
+                        dittoSyncStarting = false;
+                        updateDittoConnectionStatus("Could not stop Ditto sync (" + category + ").");
+                    });
+                }
+            }, "WTK-Ditto-disconnect").start();
+            return;
+        }
+
+        dittoDatabaseIdValue = dittoDatabaseIdET.getText().toString().trim();
+        dittoServerUrlValue = dittoServerUrlET.getText().toString().trim();
+        String token = dittoAuthTokenET.getText().toString();
+        if (!dittoCommunityMode && (dittoDatabaseIdValue.isEmpty() || dittoServerUrlValue.isEmpty()
+                || token.trim().isEmpty())) {
+            updateDittoConnectionStatus("Enter database ID, ESH server URL, and development token.");
+            return;
+        }
+        if (!requestDittoPermissions()) return;
+
+        dittoSyncStarting = true;
+        dittoEshConnected = false;
+        final DittoMeshDiagnostics meshDiagnostics = new DittoMeshDiagnostics();
+        dittoMeshDiagnostics = meshDiagnostics;
+        updateDittoConnectionStatus("Starting Ditto sync...");
+        final String databaseId = dittoDatabaseIdValue;
+        final String serverUrl = dittoServerUrlValue;
+        final boolean community = dittoCommunityMode;
+        final MapView mapView = MapView.getMapView();
+        final Context context = mapView == null ? pluginContext : mapView.getContext();
+        final long uiGeneration = dittoUiGeneration.incrementAndGet();
+        final AtomicReference<String> connectionStage =
+                new AtomicReference<>("request-validation");
+        dittoAuthTokenET.setText("");
+        new Thread(() -> DittoConnectionDiagnostics.runConnectionAttempt(() -> {
+                DittoEshListener listener = new DittoEshListener() {
+                    @Override public void onConnectionStage(String stage) {
+                        connectionStage.set(stage);
+                        runOnMain(() -> {
+                            if (!isCurrentDittoUi(uiGeneration)) return;
+                            updateDittoConnectionStatus(
+                                    "Starting Ditto sync (" + stage + ")...");
+                        });
+                    }
+
+                    @Override public void onCollectionSnapshot(
+                            String collection, List<String> documents) {
+                        processDittoSnapshot(collection, documents, uiGeneration, meshDiagnostics);
+                    }
+
+                    @Override public void onPeerCount(int count) {
+                        runOnMain(() -> {
+                            if (!isCurrentDittoUi(uiGeneration)) return;
+                            if (meshDiagnostics.updatePeers(count)) {
+                                android.util.Log.i("WTK/Ditto", meshDiagnostics.logMessage());
+                                if (!dittoSyncStarting)
+                                    updateDittoConnectionStatus(dittoStatusText());
+                            }
+                        });
+                    }
+
+                    @Override public void onEshConnectionStatus(boolean connected) {
+                        runOnMain(() -> {
+                            if (!isCurrentDittoUi(uiGeneration)) return;
+                            dittoEshConnected = connected;
+                            updateDittoConnectionStatus(dittoStatusText());
+                        });
+                    }
+
+                    @Override public void onObserverError(String category) {
+                        LogX.w(TAG, "Ditto observer issue; category=" + category);
+                        if ("presence".equals(category)) {
+                            runOnMain(() -> {
+                                if (!isCurrentDittoUi(uiGeneration)) return;
+                                meshDiagnostics.presenceUnavailable();
+                                if (!dittoSyncStarting)
+                                    updateDittoConnectionStatus(dittoStatusText());
+                            });
+                        } else if ("sync-status".equals(category)) {
+                            runOnMain(() -> {
+                                if (!isCurrentDittoUi(uiGeneration)) return;
+                                dittoEshConnected = false;
+                                updateDittoConnectionStatus(
+                                        "Sync active; ESH connection status unavailable.");
+                            });
+                        }
+                    }
+                };
+                if (community) {
+                    DittoEshConnection.connectCommunity(context, listener);
+                } else {
+                    DittoEshConnection.connect(context, databaseId, serverUrl, token, listener);
+                }
+                runOnMain(() -> {
+                    if (!isCurrentDittoUi(uiGeneration)) return;
+                    dittoSyncStarting = false;
+                    updateDittoConnectionStatus(dittoEshConnected
+                            ? "Connected to Ditto ESH." : dittoStatusText());
+                });
+            }, e -> {
+                String category = DittoConnectionDiagnostics.category(e);
+                android.util.Log.e("WTK/Ditto",
+                        DittoConnectionDiagnostics.logMessage(connectionStage.get(), e));
+                runOnMain(() -> {
+                    if (!isCurrentDittoUi(uiGeneration)) return;
+                    dittoUiGeneration.incrementAndGet();
+                    dittoSyncStarting = false;
+                    dittoEshConnected = false;
+                    updateDittoConnectionStatus(community || "sdk-linkage".equals(category)
+                            ? DittoConnectionDiagnostics.failureMessage(
+                                    community, connectionStage.get(), e)
+                            : dittoFailureMessage(category));
+                });
+            }), "WTK-Ditto-connect").start();
+    }
+
+    private boolean isCurrentDittoUi(long generation) {
+        return dittoPluginStarted && dittoUiGeneration.get() == generation;
+    }
+
+    private String dittoStatusText() {
+        if (dittoCommunityMode) return dittoMeshDiagnostics.communityStatusText();
+        return dittoEshConnected
+                ? "Connected to Ditto ESH."
+                : "Sync active; ESH connectivity not confirmed.";
+    }
+
+    private static String dittoFailureMessage(String category) {
+        if ("authentication".equals(category)) {
+            return "Authentication failed; check database ID and development token.";
+        }
+        if ("network".equals(category)) {
+            return "ESH transport failed; check HTTPS URL, network, and ESH availability.";
+        }
+        if ("configuration".equals(category)) {
+            return "Ditto configuration rejected; check database ID and ESH URL.";
+        }
+        return "Ditto SDK operation failed; see credential-safe diagnostic category.";
+    }
+
+    private void processDittoSnapshot(String collection, List<String> documents, long uiGeneration,
+                                     DittoMeshDiagnostics meshDiagnostics) {
+        if (!isCurrentDittoUi(uiGeneration)) return;
+        int forwarded = 0;
+        for (String json : documents) {
+            if (!isCurrentDittoUi(uiGeneration)) return;
+            try {
+                DittoCotAdapter.Document document = DittoCotAdapter.decode(collection, json);
+                if (document == null) continue;
+                String key = collection + "|" + document.peer + "|" + document.uid;
+                String fingerprint = DittoCotAdapter.fingerprint(json);
+                synchronized (dittoDocumentFingerprints) {
+                    if (fingerprint.equals(dittoDocumentFingerprints.get(key))) continue;
+                }
+
+                BleCotBridge bridge = bleCotBridge;
+                if (document.deleted) {
+                    if (bridge == null) continue;
+                    bridge.removeDittoMarker(document.uid);
+                } else {
+                    MapView map = MapView.getMapView();
+                    if (map != null && map.getSelfMarker() != null
+                            && document.uid.equals(map.getSelfMarker().getUID())) continue;
+                    if (bridge == null) continue;
+                    bridge.forwardDittoCot(document.xml);
+                }
+                forwarded++;
+
+                synchronized (dittoDocumentFingerprints) {
+                    dittoDocumentFingerprints.put(key, fingerprint);
+                    while (dittoDocumentFingerprints.size() > 16384) {
+                        dittoDocumentFingerprints.remove(
+                                dittoDocumentFingerprints.keySet().iterator().next());
+                    }
+                }
+            } catch (Exception e) {
+                LogX.w(TAG, "Rejected Ditto " + collection + " document; type="
+                        + e.getClass().getSimpleName());
+            }
+        }
+        if (meshDiagnostics.recordSnapshot(collection, forwarded)) {
+            runOnMain(() -> {
+                if (!isCurrentDittoUi(uiGeneration)) return;
+                android.util.Log.i("WTK/Ditto", meshDiagnostics.logMessage());
+                if (!dittoSyncStarting) updateDittoConnectionStatus(dittoStatusText());
+            });
+        }
     }
 
     private void initializeDiagnosticLogger() {
@@ -2694,11 +3150,32 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             voiceTransferStatus = paneView.findViewById(R.id.voiceTransferStatus);
             voiceChannelsButton = paneView.findViewById(R.id.voiceChannelsButton);
             voiceChannelsButton.setOnClickListener(v -> chooseVoiceChannels());
+            paneView.findViewById(R.id.playVoiceSetupSound).setOnClickListener(v -> openVoiceSetup());
             updateCapabilitiesUi();
             locationDiagnosticsStatus = paneView.findViewById(R.id.locationDiagnosticsStatus);
             garminConnectionStatusTV = paneView.findViewById(R.id.garminConnectionStatus);
             garminIdentityRows = paneView.findViewById(R.id.garminIdentityRows);
             garminConnectionBadgeTV = paneView.findViewById(R.id.garminConnectionBadge);
+            dittoDatabaseIdET = paneView.findViewById(R.id.dittoDatabaseId);
+            dittoServerUrlET = paneView.findViewById(R.id.dittoServerUrl);
+            dittoAuthTokenET = paneView.findViewById(R.id.dittoAuthToken);
+            dittoConnectButton = paneView.findViewById(R.id.dittoConnectButton);
+            dittoConnectionStatusTV = paneView.findViewById(R.id.dittoConnectionStatus);
+            dittoMode = paneView.findViewById(R.id.dittoMode);
+            dittoDatabaseIdET.setText(dittoDatabaseIdValue);
+            dittoServerUrlET.setText(dittoServerUrlValue);
+            dittoMode.check(dittoCommunityMode ? R.id.dittoCommunityMode : R.id.dittoEshMode);
+            dittoMode.setOnCheckedChangeListener((group, checkedId) -> {
+                dittoCommunityMode = checkedId == R.id.dittoCommunityMode;
+                updateDittoMode();
+            });
+            int dittoVisibility = dittoCommunityMode ? View.GONE : View.VISIBLE;
+            dittoDatabaseIdET.setVisibility(dittoVisibility);
+            dittoServerUrlET.setVisibility(dittoVisibility);
+            dittoAuthTokenET.setVisibility(dittoVisibility);
+            dittoConnectButton.setOnClickListener(v -> onDittoConnectionClicked());
+            updateDittoConnectionStatus(DittoEshConnection.isSyncActive()
+                    ? dittoStatusText() : "Not connected");
             garminSettingsButton = paneView.findViewById(R.id.garminSettingsButton);
             garminSettingsButton.setOnClickListener(v -> openGarminSettings());
             if (garminClient != null) {
@@ -3162,7 +3639,7 @@ public class WearTakPlugin implements IPlugin, IToolbarItem {
             return;
         }
         if (bleClient == null || !bleClient.isConnected()) return;
-        if (!"onReady".equals(reason)) requestWatchCapabilities();
+        if ("refreshButton".equals(reason)) requestWatchCapabilities();
         if (phoneSettingsHandshake.isFailed() && !setupPurpose && phoneManagedSettingsRequested) {
             startPhoneSettingsHandshake();
             return;

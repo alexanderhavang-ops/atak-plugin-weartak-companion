@@ -86,9 +86,11 @@
     <string name="companion_disconnect_question">Disconnect watch?</string>
     <string name="companion_cancel">Cancel</string>
     <string name="companion_disconnect_confirm">Disconnect</string>
+    <string name="companion_voice_checking">Checking watch voice capabilities…</string>
     <string name="companion_voice_unavailable">Voice channels unavailable on this connection.</string>
     <string name="companion_garmin_choose_one">Connect one Garmin watch to manage its settings.</string>
     <string name="companion_garmin_watches">Garmin watches</string>
     <string name="companion_settings_not_reported">Watch settings are unavailable.</string>
     <string name="companion_capabilities_not_reported">This connection does not report software or plugins.</string>
+    <string name="companion_play_voice_setup_sound">Voice setup</string>
 </resources>
